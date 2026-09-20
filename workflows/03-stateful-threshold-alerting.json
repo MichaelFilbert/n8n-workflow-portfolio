@@ -1,0 +1,361 @@
+{
+  "name": "03 — Stateful threshold alerting with auto-recovery",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000001",
+      "name": "Every hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.github.com/repos/n8n-io/n8n",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000002",
+      "name": "Fetch the metric",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        20,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "fileSelector": "/Users/michaelfilbert/job-application/bookipi/n8n-portfolio/.state/alert-state.json",
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000003",
+      "name": "Read previous state",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        180,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "notes": "Absent on the very first run. onError continues, and alwaysOutputData guarantees an item still flows — without it the node emits zero items, every downstream node is skipped, and n8n still reports the run as successful.",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---------------------------------------------------------------------------\n// The point of this workflow.\n//\n// A naive alert fires the moment one reading crosses a threshold, so a single\n// blip pages someone at 3am and the alert is muted within a week. This holds a\n// rolling window and fires only when the condition PERSISTS — 3 of the last 5\n// readings — then refuses to fire again until the metric has actually recovered.\n//\n//   1. persistence  — a transient spike never alerts\n//   2. idempotence  — an open alert is never duplicated\n//   3. recovery     — the alert closes itself\n//\n// State lives in a file on disk, not in $getWorkflowStaticData(). Static data is\n// only persisted for PRODUCTION executions, so a version built on it passes every\n// manual test while being structurally incapable of ever reaching the threshold.\n// A file works identically in manual and production runs, and is inspectable.\n// ---------------------------------------------------------------------------\nconst THRESHOLD         = 200;\nconst WINDOW_SIZE       = 5;\nconst BREACHES_TO_ALERT = 3;\n\n// --- load previous state (already parsed to json upstream) -----------------\nlet state = { window: [], alertOpen: false, issueNumber: null };\n\n// 'Extract From File' nests parsed json under json.data by default, but returns\n// it at the top level in some versions. Accept either rather than depend on it.\nconst raw  = $input.first()?.json ?? {};\nconst prev = Array.isArray(raw.window) ? raw\n           : (raw.data && Array.isArray(raw.data.window) ? raw.data : null);\n\nif (prev) {\n  state = { window: prev.window, alertOpen: !!prev.alertOpen, issueNumber: prev.issueNumber ?? null };\n}\n\n// --- take the reading ------------------------------------------------------\n\nconst value = $('Fetch the metric').first().json.open_issues_count;\nif (typeof value !== 'number') {\n  throw new Error('Metric missing from payload — upstream API shape changed.');\n}\n\nstate.window.push({ value, breached: value > THRESHOLD, at: new Date().toISOString() });\nif (state.window.length > WINDOW_SIZE) state.window.shift();\n\nconst breaches        = state.window.filter((r) => r.breached).length;\nconst persistentlyBad = breaches >= BREACHES_TO_ALERT;\nconst fullyRecovered  = state.window.length === WINDOW_SIZE && breaches === 0;\n\n// --- decide ----------------------------------------------------------------\nlet action = 'NOOP';\nlet reason = `${breaches}/${state.window.length} readings breached — no state change`;\n\nif (persistentlyBad && !state.alertOpen) {\n  action = 'OPEN_ALERT';\n  reason = `${breaches} of the last ${state.window.length} readings breached ${THRESHOLD}`;\n  state.alertOpen = true;\n} else if (fullyRecovered && state.alertOpen) {\n  action = 'CLOSE_ALERT';\n  reason = `all ${WINDOW_SIZE} recent readings back under ${THRESHOLD}`;\n  state.alertOpen = false;\n} else if (persistentlyBad && state.alertOpen) {\n  reason = 'already alerted — suppressed to avoid a duplicate ticket';\n}\n\nconst out = {\n  action,\n  reason,\n  value,\n  threshold: THRESHOLD,\n  breaches,\n  window_size: state.window.length,\n  alertOpen: state.alertOpen,\n  issueNumber: state.issueNumber,\n  window: state.window\n};\n\n\nreturn [{ json: out }];"
+      },
+      "id": "c3000000-0000-4000-8000-000000000004",
+      "name": "Rolling window state machine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/Users/michaelfilbert/job-application/bookipi/n8n-portfolio/.state/alert-state.json",
+        "dataPropertyName": "data",
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000005",
+      "name": "Persist state to disk",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        880,
+        470
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "OPEN_ALERT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "open"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "CLOSE_ALERT",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "close"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "NOOP",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "noop"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-000000000006",
+      "name": "Route on state transition",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        700,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/OWNER/REPO/issues",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ title: `Metric breached threshold (${$json.value} > ${$json.threshold})`, body: $json.reason }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000007",
+      "name": "Open a ticket",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        40
+      ],
+      "disabled": true,
+      "notes": "Needs a GitHub credential and a real OWNER/REPO. Disabled so the workflow runs end-to-end without one."
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://api.github.com/repos/OWNER/REPO/issues/{{ $json.issueNumber }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ state: 'closed' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "c3000000-0000-4000-8000-000000000008",
+      "name": "Close the ticket — recovered",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        180
+      ],
+      "disabled": true,
+      "notes": "Same credential as 'Open a ticket'. Disabled by default."
+    },
+    {
+      "parameters": {},
+      "id": "c3000000-0000-4000-8000-000000000009",
+      "name": "Nothing to do",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        960,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "fromJson",
+        "binaryPropertyName": "data",
+        "options": {}
+      },
+      "id": "c3000000-0000-4000-8000-00000000000a",
+      "name": "Parse state file",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        350,
+        300
+      ],
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true,
+      "notes": "Binary buffers are not passed into the JS task runner, so the Code node cannot read them. Converting to json here keeps all binary handling in dedicated nodes."
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "mode": "all",
+        "options": {
+          "fileName": "alert-state.json"
+        }
+      },
+      "id": "c3000000-0000-4000-8000-00000000000b",
+      "name": "State to file",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        700,
+        470
+      ]
+    }
+  ],
+  "connections": {
+    "Every hour": {
+      "main": [
+        [
+          {
+            "node": "Fetch the metric",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch the metric": {
+      "main": [
+        [
+          {
+            "node": "Read previous state",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read previous state": {
+      "main": [
+        [
+          {
+            "node": "Parse state file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse state file": {
+      "main": [
+        [
+          {
+            "node": "Rolling window state machine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rolling window state machine": {
+      "main": [
+        [
+          {
+            "node": "Route on state transition",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "State to file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "State to file": {
+      "main": [
+        [
+          {
+            "node": "Persist state to disk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route on state transition": {
+      "main": [
+        [
+          {
+            "node": "Open a ticket",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Close the ticket — recovered",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nothing to do",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

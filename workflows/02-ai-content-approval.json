@@ -1,0 +1,245 @@
+{
+  "name": "02 — Webhook AI content pipeline with human approval",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "content-request",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000001",
+      "name": "Content request webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        300
+      ],
+      "notes": "POST { product, audience, tone }"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Never trust a webhook payload. Validate before spending a model call on it.\nconst REQUIRED = ['product', 'audience', 'tone'];\nconst body = $input.first().json.body ?? $input.first().json;\n\nconst missing = REQUIRED.filter((f) => !body[f] || String(body[f]).trim() === '');\n\nif (missing.length) {\n  return [{ json: { valid: false, error: `Missing required field(s): ${missing.join(', ')}` } }];\n}\n\nreturn [{ json: {\n  valid: true,\n  product:  String(body.product).slice(0, 200),\n  audience: String(body.audience).slice(0, 200),\n  tone:     String(body.tone).slice(0, 60)\n} }];"
+      },
+      "id": "b2000000-0000-4000-8000-000000000002",
+      "name": "Validate the payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000003",
+      "name": "Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        280,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "llama3.2",
+        "options": {
+          "temperature": 0.8
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000004",
+      "name": "Ollama (local, free)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        520,
+        480
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollamaLocalCred01",
+          "name": "Ollama local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Write three distinct marketing copy variants.\n\nProduct: {{ $json.product }}\nAudience: {{ $json.audience }}\nTone: {{ $json.tone }}\n\nEach variant must take a different angle from the others. Return ONLY valid JSON matching this shape, with no markdown fence and no commentary:\n\n{\"variants\":[{\"headline\":\"...\",\"body\":\"...\",\"angle\":\"...\"}]}",
+        "hasOutputParser": true
+      },
+      "id": "b2000000-0000-4000-8000-000000000005",
+      "name": "Generate 3 variants",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        520,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"variants\": [\n    { \"headline\": \"string\", \"body\": \"string\", \"angle\": \"string\" }\n  ]\n}"
+      },
+      "id": "b2000000-0000-4000-8000-000000000006",
+      "name": "Force valid JSON",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        700,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// A model returning malformed output must not take the workflow down.\n// One row per variant, each marked pending_approval — nothing is published yet.\nlet parsed;\ntry {\n  const raw = $input.first().json;\n  parsed = raw.output ?? raw;\n  if (typeof parsed === 'string') parsed = JSON.parse(parsed);\n} catch (e) {\n  return [{ json: { status: 'parse_failed', error: String(e), action: 'retry or escalate — nothing published' } }];\n}\n\nconst variants = parsed.variants ?? [];\nif (!variants.length) {\n  return [{ json: { status: 'empty_output', action: 'retry or escalate — nothing published' } }];\n}\n\nreturn variants.map((v, i) => ({ json: {\n  variant_number: i + 1,\n  headline: v.headline,\n  body: v.body,\n  angle: v.angle,\n  status: 'pending_approval',\n  requested_at: new Date().toISOString()\n} }));"
+      },
+      "id": "b2000000-0000-4000-8000-000000000007",
+      "name": "Parse, or fail safely",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// HUMAN GATE.\n//\n// Everything above this line is generated. Nothing below it runs until a person\n// approves. An LLM does not get to publish to a live channel unsupervised —\n// this node is where a Slack approval, an Airtable status field, or n8n's own\n// Wait node would sit.\nreturn $input.all().map((i) => ({ json: { ...i.json, awaiting: 'human approval before anything is published' } }));"
+      },
+      "id": "b2000000-0000-4000-8000-000000000008",
+      "name": "Hold for human approval",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ok: false, error: $input.first().json.error } }];"
+      },
+      "id": "b2000000-0000-4000-8000-000000000009",
+      "name": "Reject — bad request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        20
+      ]
+    }
+  ],
+  "connections": {
+    "Content request webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate the payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate the payload": {
+      "main": [
+        [
+          {
+            "node": "Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid?": {
+      "main": [
+        [
+          {
+            "node": "Generate 3 variants",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject — bad request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama (local, free)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Generate 3 variants",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Force valid JSON": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Generate 3 variants",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate 3 variants": {
+      "main": [
+        [
+          {
+            "node": "Parse, or fail safely",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse, or fail safely": {
+      "main": [
+        [
+          {
+            "node": "Hold for human approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

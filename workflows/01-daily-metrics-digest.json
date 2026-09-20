@@ -1,0 +1,248 @@
+{
+  "name": "01 — Daily multi-source metrics digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Every morning 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -160,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.github.com/repos/n8n-io/n8n",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Source A — GitHub repo stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        60,
+        180
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "url": "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_vol=true",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Source B — CoinGecko price",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        60,
+        420
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {},
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Merge sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Each source returns a different shape. Flatten both into one common record\n// { source, metric, value } so everything downstream is shape-agnostic.\nconst out = [];\n\nfor (const item of $input.all()) {\n  const d = item.json;\n\n  if (d.stargazers_count !== undefined) {\n    out.push({ json: { source: 'github', metric: 'stars',       value: d.stargazers_count } });\n    out.push({ json: { source: 'github', metric: 'forks',       value: d.forks_count } });\n    out.push({ json: { source: 'github', metric: 'open_issues', value: d.open_issues_count } });\n  }\n\n  if (d.bitcoin !== undefined) {\n    out.push({ json: { source: 'coingecko', metric: 'btc_usd',     value: d.bitcoin.usd } });\n    out.push({ json: { source: 'coingecko', metric: 'btc_vol_24h', value: Math.round(d.bitcoin.usd_24h_vol) } });\n  }\n}\n\nif (out.length === 0) {\n  throw new Error('No recognised source payload — both upstream APIs changed shape or failed.');\n}\n\nreturn out;"
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Normalise to one shape",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Absolutes are noise; deltas are signal. Keep the previous run in workflow\n// static data and report the change, not the number.\nconst store = $getWorkflowStaticData('global');\nconst prev  = store.lastRun || {};\nconst now   = {};\nconst out   = [];\n\nfor (const item of $input.all()) {\n  const { source, metric, value } = item.json;\n  const key = `${source}.${metric}`;\n  now[key] = value;\n\n  const before = prev[key];\n  const delta  = before === undefined ? null : value - before;\n  const pct    = (before === undefined || before === 0)\n    ? null\n    : Number(((delta / before) * 100).toFixed(2));\n\n  out.push({ json: { source, metric, value, previous: before ?? null, delta, pct_change: pct } });\n}\n\nstore.lastRun = now;\nreturn out;"
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Compute deltas vs last run",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collapse every metric row into one plain-text block for the model.\nconst lines = $input.all().map((i) => {\n  const j = i.json;\n  const change = j.delta === null\n    ? 'first run — no baseline yet'\n    : `${j.delta >= 0 ? '+' : ''}${j.delta} (${j.pct_change}%)`;\n  return `${j.source} ${j.metric}: ${j.value} — ${change}`;\n}).join('\\n');\n\nreturn [{ json: { lines } }];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "Format for the model",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "model": "llama3.2",
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "Ollama (local, free)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        480
+      ],
+      "credentials": {
+        "ollamaApi": {
+          "id": "ollamaLocalCred01",
+          "name": "Ollama local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are writing a short daily metrics digest for a busy team.\n\nToday's data:\n{{ $json.lines }}\n\nRules:\n- Lead with anything that moved more than 10%.\n- If nothing moved more than 10%, say so in the first sentence.\n- Three sentences maximum.\n- No preamble, no greeting, no sign-off."
+      },
+      "id": "a1000000-0000-4000-8000-000000000009",
+      "name": "Summarise the change",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        1180,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Every morning 08:00": {
+      "main": [
+        [
+          {
+            "node": "Source A — GitHub repo stats",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Source B — CoinGecko price",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Source A — GitHub repo stats": {
+      "main": [
+        [
+          {
+            "node": "Merge sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Source B — CoinGecko price": {
+      "main": [
+        [
+          {
+            "node": "Merge sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge sources": {
+      "main": [
+        [
+          {
+            "node": "Normalise to one shape",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise to one shape": {
+      "main": [
+        [
+          {
+            "node": "Compute deltas vs last run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute deltas vs last run": {
+      "main": [
+        [
+          {
+            "node": "Format for the model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format for the model": {
+      "main": [
+        [
+          {
+            "node": "Summarise the change",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama (local, free)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Summarise the change",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
