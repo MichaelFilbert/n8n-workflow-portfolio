@@ -154,6 +154,43 @@ def main():
     check("order without address: owner still notified",
           wait_for(lambda: any(big in s["body"]["text"]["body"] for s in to(OWNER)), 30))
 
+    # 2c. Two products in one message: both must be on the bill (the model once dropped one
+    #     and quoted Rp100.000 for a Rp205.000 order)
+    multi = new_customer()
+    http("POST", WEBHOOK, meta_webhook([text_msg(
+        "Mau pesan 1 Arabika Gayo 250g dan 2 Robusta Temanggung 250g, kirim ke Jl. Pemuda 5 Semarang", multi)]))
+    wait_for(lambda: to(multi) and leads_rows_for(multi))
+    text = to(multi)[0]["body"]["text"]["body"] if to(multi) else ""
+    row = lead(multi)
+    check("two products: either billed in full (Rp205.000, free shipping) or handed to a human",
+          ("Rp205.000" in text and "GRATIS" in text) or row.get("intent") == "needs_human", text)
+    check("two products: never a partial total", "Rp100.000" not in text and "Rp85.000\nOngkir" not in text, text)
+
+    # 2d. Casual Indonesian, no "pesan"/"order" keyword
+    casual = new_customer()
+    http("POST", WEBHOOK, meta_webhook([text_msg("kak arabika gayo 1 ya, alamat jl kaliurang km 7 jogja", casual)]))
+    wait_for(lambda: to(casual) and leads_rows_for(casual))
+    text = to(casual)[0]["body"]["text"]["body"] if to(casual) else ""
+    check("casual order: Rp100.000 total, or handed to a human",
+          "Rp100.000" in text or lead(casual).get("intent") == "needs_human", f"{lead(casual).get('intent')}: {text}")
+
+    # 2e. A product the shop doesn't sell: no invented product or price
+    toraja = new_customer()
+    http("POST", WEBHOOK, meta_webhook([text_msg("Ada kopi Toraja nggak kak? harganya berapa?", toraja)]))
+    wait_for(lambda: to(toraja) and leads_rows_for(toraja))
+    text = to(toraja)[0]["body"]["text"]["body"] if to(toraja) else ""
+    quoted = set(re.findall(r"Rp\s?(\d{1,3}(?:\.\d{3})*)", text))
+    check("unknown product: no price outside the price list", quoted <= ALLOWED_PRICES, f"quoted {quoted}: {text}")
+    check("unknown product: not booked as an order", lead(toraja).get("intent") != "order", str(lead(toraja)))
+
+    # 2f. A complaint always reaches the owner
+    angry = new_customer()
+    http("POST", WEBHOOK, meta_webhook([text_msg("Kak pesanan saya belum sampai, sudah 5 hari, gimana ini?", angry)]))
+    check("complaint: owner is asked to handle it",
+          wait_for(lambda: any(angry in s["body"]["text"]["body"] and "PERLU DIBALAS" in s["body"]["text"]["body"]
+                               for s in to(OWNER)), 120))
+    check("complaint: customer gets a reply", bool(to(angry)))
+
     # 3. A plain question: reply, but the owner is NOT bothered
     asker = new_customer()
     owner_before = len(to(OWNER))

@@ -176,7 +176,8 @@ payload shape, and the Graph API `/messages` call for replies.
 
 | Rule | How |
 |---|---|
-| **The AI never does arithmetic** | It picks a product from an enum and a quantity. Code computes subtotal, shipping and the free-shipping threshold. |
+| **The AI never does arithmetic** | It picks products from an enum, with quantities. Code computes subtotal, shipping and the free-shipping threshold. |
+| **The order must match the message** | Every product on the bill must be mentioned by the customer, every quantity must appear in the message, and no mentioned product may be missing. Otherwise a human answers. |
 | **The AI never invents a price** | Every `Rp` amount in a reply must exist in the price list, or the reply is replaced with a holding message and the owner is pinged. |
 | **Nobody gets ghosted** | Model down, timeout, invalid JSON, unknown product: the customer still gets a polite reply, and the owner sees *why* the bot stepped back. |
 | **One message, one reply** | Meta retries webhooks; message IDs are de-duplicated so a retry never sends a second reply or logs a second order. |
@@ -186,7 +187,7 @@ payload shape, and the Graph API `/messages` call for replies.
 ### What testing it found
 
 The first version passed every check I had written, and it was still wrong. Reading the leads file
-rather than trusting the test run showed three things:
+rather than trusting the test run, and then trying messages I hadn't written tests for, showed these:
 
 1. **The model invented a shipping price.** Asked *"ongkir ke Jakarta berapa?"*, it replied
    Rp30.000. The real rate is a flat Rp15.000. It had also labelled the question as an order and
@@ -196,17 +197,23 @@ rather than trusting the test run showed three things:
    Rp30.000"*.
 2. **Product, quantity and address came back empty.** A nested `order` object in the JSON schema was
    too much for a 3B model. A flat schema with the product as an enum fixed it.
-3. **The sheet lost its header row when the file was recreated.** A "header already written" flag
+3. **Orders with two products were under-billed, and then double-billed.** *"1 Arabika dan 2 Robusta"*
+   came back as just the Arabika, so the customer was told Rp100.000 for a Rp205.000 order. After I
+   let the model return a list of items, it started listing a single item twice, so a Rp185.000 order
+   was billed at Rp340.000 in 2 of 3 runs. The model's order is now cross-checked against the
+   customer's own words before any total is sent.
+4. **The sheet lost its header row when the file was recreated.** A "header already written" flag
    in workflow static data outlived the file. The workflow now checks whether the file exists.
    Reading a missing file gives zero items rather than an error, so the check is an expression on
    the file's binary data.
 
-`tests/test_04_whatsapp.py` runs 24 end-to-end checks against the live workflow and a real local
+`tests/test_04_whatsapp.py` runs 31 end-to-end checks against the live workflow and a real local
 model, with a mock Graph API standing in for WhatsApp so every outbound message is asserted on.
 The checks cover the verify handshake, order totals, free shipping, missing address, duplicate
-delivery, receipts, images, owner notifications and the price guard. The model is
+delivery, receipts, images, multi-product and casual orders, a product the shop doesn't sell,
+complaints, owner notifications and the price guard. The model is
 non-deterministic, so the tests assert *behaviour* (answered vs. escalated) rather than the exact
-label it chose. They pass on repeated runs.
+label it chose. They passed 5 runs in a row.
 
 ### Running it
 
