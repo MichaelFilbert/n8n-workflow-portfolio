@@ -1,0 +1,658 @@
+{
+  "id": "wa04AiOrderAssist",
+  "name": "04 · WhatsApp AI order assistant",
+  "nodes": [
+    {
+      "name": "WhatsApp verify (GET)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -300
+      ],
+      "webhookId": "b7a1c2d3-0001-4c1e-9a10-000000000001",
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b7a1c2d3-0000-4c1e-9a10-000000000000"
+    },
+    {
+      "name": "Token matches?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        220,
+        -300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.query['hub.mode'] }}",
+              "rightValue": "subscribe",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "leftValue": "={{ $json.query['hub.verify_token'] }}",
+              "rightValue": "=change-me-verify-token",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b7a1c2d3-0001-4c1e-9a10-000000000001"
+    },
+    {
+      "name": "Return challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        -380
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.query['hub.challenge'] }}",
+        "options": {}
+      },
+      "id": "b7a1c2d3-0002-4c1e-9a10-000000000002"
+    },
+    {
+      "name": "Reject (403)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        -220
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "forbidden",
+        "options": {
+          "responseCode": 403
+        }
+      },
+      "id": "b7a1c2d3-0003-4c1e-9a10-000000000003"
+    },
+    {
+      "name": "WhatsApp message (POST)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "b7a1c2d3-0002-4c1e-9a10-000000000002",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "b7a1c2d3-0004-4c1e-9a10-000000000004"
+    },
+    {
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "{\n  \"businessName\": \"Kopi Senja\",\n  \"products\": [\n    {\n      \"name\": \"Arabika Gayo 250g\",\n      \"price\": 85000\n    },\n    {\n      \"name\": \"Robusta Temanggung 250g\",\n      \"price\": 60000\n    },\n    {\n      \"name\": \"House Blend 250g\",\n      \"price\": 70000\n    }\n  ],\n  \"shippingFlat\": 15000,\n  \"freeShippingFrom\": 200000,\n  \"otherInfo\": \"Kirim dari Semarang ke seluruh Pulau Jawa (termasuk Jakarta). Luar Jawa: tanya admin.\\nBuka Senin-Sabtu 08.00-20.00 WIB. Pembayaran transfer BCA atau QRIS.\",\n  \"ownerPhone\": \"6281200000000\",\n  \"verifyToken\": \"change-me-verify-token\",\n  \"waApiBase\": \"http://127.0.0.1:8765/v21.0\",\n  \"waPhoneNumberId\": \"123456789012345\",\n  \"waAccessToken\": \"test-token\",\n  \"ollamaUrl\": \"http://127.0.0.1:11434\",\n  \"model\": \"llama3.2\",\n  \"leadsFile\": \"/Users/michaelfilbert/n8n-files/leads.csv\"\n}",
+        "options": {}
+      },
+      "id": "b7a1c2d3-0005-4c1e-9a10-000000000005"
+    },
+    {
+      "name": "Parse Meta payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Meta sends one webhook for many things: messages, delivery receipts, read receipts.\n// Only inbound customer messages should ever reach the AI. Everything else stops here.\nconst body = $('WhatsApp message (POST)').first().json.body ?? {};\nconst out = [];\n\nfor (const entry of body.entry ?? []) {\n  for (const change of entry.changes ?? []) {\n    const value = change.value ?? {};\n    const names = Object.fromEntries((value.contacts ?? []).map((c) => [c.wa_id, c.profile?.name ?? '']));\n    for (const m of value.messages ?? []) {\n      out.push({\n        json: {\n          messageId: m.id,\n          from: m.from,\n          name: names[m.from] ?? '',\n          type: m.type,\n          text: m.type === 'text' ? String(m.text?.body ?? '').slice(0, 2000) : null,\n          receivedAt: new Date(Number(m.timestamp) * 1000 || Date.now()).toISOString(),\n        },\n      });\n    }\n  }\n}\n\n// Zero items is correct for a status-only webhook: nothing downstream should run.\nreturn out;"
+      },
+      "id": "b7a1c2d3-0006-4c1e-9a10-000000000006"
+    },
+    {
+      "name": "Skip duplicates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Meta retries a webhook if it doesn't get a 200 fast enough, so the same message can\n// arrive twice. Without this, the customer gets two replies and the sheet gets two orders.\n// Static data persists only for production (activated) executions — which is what Meta hits.\nconst store = $getWorkflowStaticData('global');\nstore.seen = store.seen ?? [];\nconst fresh = [];\n\nfor (const item of $input.all()) {\n  if (store.seen.includes(item.json.messageId)) continue;\n  store.seen.push(item.json.messageId);\n  fresh.push(item);\n}\n\nstore.seen = store.seen.slice(-1000);\nreturn fresh;"
+      },
+      "id": "b7a1c2d3-0007-4c1e-9a10-000000000007"
+    },
+    {
+      "name": "Text?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "text",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b7a1c2d3-0008-4c1e-9a10-000000000008"
+    },
+    {
+      "name": "Build AI request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        -100
+      ],
+      "parameters": {
+        "jsCode": "// Ollama structured output: the model must return JSON matching this schema.\n// It is still validated afterwards — a schema is a request, not a guarantee.\nconst cfg = $('Config').first().json;\nconst rp = (n) => 'Rp' + n.toLocaleString('id-ID');\nconst names = cfg.products.map((p) => p.name);\n\nconst system = `Kamu adalah asisten WhatsApp untuk ${cfg.businessName}.\nBalas dalam Bahasa Indonesia yang ramah dan singkat (maksimal 3 kalimat).\nHanya gunakan informasi di bawah ini. Jangan mengarang harga, produk, ongkir, atau janji.\nKalau informasinya tidak ada, bilang admin akan membantu.\n\nDAFTAR HARGA:\n${cfg.products.map((p) => `- ${p.name}: ${rp(p.price)}`).join('\\n')}\nOngkir: ${rp(cfg.shippingFlat)} flat, gratis untuk belanja minimal ${rp(cfg.freeShippingFrom)}.\n${cfg.otherInfo}\n\nTentukan intent:\n- order: pelanggan menyatakan ingin membeli produk tertentu (\"mau pesan\", \"beli\", \"order\")\n- question: bertanya harga, ongkir, jam buka, cara bayar, dll. (bertanya ongkir BUKAN order)\n- complaint: keluhan atau masalah pesanan\n- other: sapaan atau lainnya\nUntuk order: isi product (persis salah satu dari daftar), quantity, dan address bila disebut.\nJika bukan order: product \"\", quantity 0, address \"\".`;\n\nconst format = {\n  type: 'object',\n  properties: {\n    intent: { type: 'string', enum: ['order', 'question', 'complaint', 'other'] },\n    product: { type: 'string', enum: [...names, ''] },\n    quantity: { type: 'integer' },\n    address: { type: 'string' },\n    reply: { type: 'string' },\n  },\n  required: ['intent', 'product', 'quantity', 'address', 'reply'],\n};\n\nreturn $input.all().map((item) => ({\n  json: {\n    ...item.json,\n    aiRequest: {\n      model: cfg.model,\n      stream: false,\n      options: { temperature: 0.1 },\n      format,\n      messages: [\n        { role: 'system', content: system },\n        { role: 'user', content: item.json.text },\n      ],\n    },\n  },\n}));"
+      },
+      "id": "b7a1c2d3-0009-4c1e-9a10-000000000009"
+    },
+    {
+      "name": "AI: classify + draft reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        -100
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.ollamaUrl }}/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.aiRequest) }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "b7a1c2d3-0010-4c1e-9a10-000000000010"
+    },
+    {
+      "name": "Validate AI output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        -100
+      ],
+      "parameters": {
+        "jsCode": "// The model's output is a suggestion, not a fact. Two rules:\n//   1. Money is calculated here, in code — never by the model.\n//   2. Any price the model writes must exist in the price list. Otherwise the customer\n//      gets a holding reply and the owner is asked to answer.\n// Model down, timeout, invalid JSON or an unknown intent end the same way: nobody is ghosted.\nconst INTENTS = ['order', 'question', 'complaint', 'other'];\nconst cfg = $('Config').first().json;\nconst msgs = $('Build AI request').all();\nconst rp = (n) => 'Rp' + n.toLocaleString('id-ID');\nconst FALLBACK = `Terima kasih sudah menghubungi ${cfg.businessName}! Pesan Anda sudah kami terima, admin kami akan membalas sebentar lagi.`;\n\nconst allowed = new Set([...cfg.products.map((p) => p.price), cfg.shippingFlat, cfg.freeShippingFrom]);\nconst pricesIn = (text) =>\n  [...text.matchAll(/Rp\\s?([\\d.,]+)/gi)].map((m) => Number(m[1].replace(/[.,](?=\\d{3}\\b)/g, '').replace(/[.,]\\d{1,2}$/, '')));\n\nfunction orderReply(product, qty, address) {\n  const subtotal = product.price * qty;\n  const shipping = subtotal >= cfg.freeShippingFrom ? 0 : cfg.shippingFlat;\n  const lines = [\n    `Siap kak, pesanan dicatat 🙏`,\n    `${qty} x ${product.name} = ${rp(subtotal)}`,\n    `Ongkir: ${shipping ? rp(shipping) : 'GRATIS'}`,\n    `Total: ${rp(subtotal + shipping)}`,\n  ];\n  lines.push(address ? `Dikirim ke: ${address}` : `Boleh minta alamat lengkap pengirimannya kak?`);\n  lines.push(`Admin akan kirim info pembayaran (BCA/QRIS) sebentar lagi.`);\n  return { reply: lines.join('\\n'), total: subtotal + shipping };\n}\n\nreturn $input.all().map((item, i) => {\n  const msg = msgs[i].json;\n  delete msg.aiRequest;\n  let ai = null;\n  let reply = FALLBACK;\n  let total = '';\n  let problem = '';\n\n  try {\n    if (item.json.error) throw new Error('AI request failed: ' + String(item.json.error.message ?? item.json.error).slice(0, 150));\n    ai = JSON.parse(item.json.message?.content ?? '');\n    if (!INTENTS.includes(ai.intent)) throw new Error(`unknown intent \"${ai.intent}\"`);\n\n    if (ai.intent === 'order') {\n      const product = cfg.products.find((p) => p.name === ai.product);\n      const qty = Number(ai.quantity);\n      if (!product) throw new Error(`order for a product not in the list: \"${ai.product}\"`);\n      if (!Number.isInteger(qty) || qty < 1 || qty > 50) throw new Error(`implausible quantity: ${ai.quantity}`);\n      ({ reply, total } = orderReply(product, qty, String(ai.address ?? '').trim()));\n    } else {\n      if (typeof ai.reply !== 'string' || !ai.reply.trim()) throw new Error('empty reply');\n      if (ai.reply.length > 1000) throw new Error('reply too long');\n      const invented = pricesIn(ai.reply).filter((n) => !allowed.has(n));\n      if (invented.length) throw new Error(`AI quoted a price not in the price list: ${invented.map(rp).join(', ')}`);\n      reply = ai.reply.trim();\n    }\n  } catch (e) {\n    problem = String(e.message ?? e);\n    ai = null;\n    reply = FALLBACK;\n  }\n\n  const isOrder = ai?.intent === 'order';\n  return {\n    json: {\n      ...msg,\n      intent: ai ? ai.intent : 'needs_human',\n      reply,\n      product: isOrder ? ai.product : '',\n      quantity: isOrder ? ai.quantity : '',\n      address: isOrder ? ai.address ?? '' : '',\n      total,\n      needsHuman: !ai || ai.intent === 'complaint',\n      problem,\n    },\n  };\n});"
+      },
+      "id": "b7a1c2d3-0011-4c1e-9a10-000000000011"
+    },
+    {
+      "name": "Non-text: hand to human",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        120
+      ],
+      "parameters": {
+        "jsCode": "// Images, voice notes, stickers: don't guess at them with a text model. Hand off to a human.\nconst cfg = $('Config').first().json;\nreturn $input.all().map((item) => ({\n  json: {\n    ...item.json,\n    intent: 'needs_human',\n    reply: `Terima kasih! Saat ini asisten kami hanya bisa membaca pesan teks. Admin ${cfg.businessName} akan cek pesan Anda segera.`,\n    product: '', quantity: '', address: '', total: '',\n    needsHuman: true,\n    problem: `non-text message (${item.json.type})`,\n  },\n}));"
+      },
+      "id": "b7a1c2d3-0012-4c1e-9a10-000000000012"
+    },
+    {
+      "name": "All handled messages",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1760,
+        0
+      ],
+      "parameters": {},
+      "id": "b7a1c2d3-0013-4c1e-9a10-000000000013"
+    },
+    {
+      "name": "Reply to customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        -200
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.waApiBase + '/' + $('Config').first().json.waPhoneNumberId + '/messages' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Config').first().json.waAccessToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.from, type: 'text', text: { body: $json.reply } }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "b7a1c2d3-0014-4c1e-9a10-000000000014"
+    },
+    {
+      "name": "Leads file exists?",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1980,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ $('Config').first().json.leadsFile }}",
+        "options": {}
+      },
+      "id": "b7a1c2d3-0015-4c1e-9a10-000000000015"
+    },
+    {
+      "name": "File status",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2200,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e1",
+              "name": "exists",
+              "type": "boolean",
+              "value": "={{ !!$binary?.data }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b7a1c2d3-0016-4c1e-9a10-000000000016"
+    },
+    {
+      "name": "Build sheet rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// One row per message — the same columns a Google Sheet would get.\nconst esc = (v) => {\n  const s = String(v ?? '').replace(/\\r?\\n/g, ' ');\n  return /[\",]/.test(s) ? `\"${s.replace(/\"/g, '\"\"')}\"` : s;\n};\nconst cols = ['receivedAt', 'from', 'name', 'intent', 'product', 'quantity', 'address', 'total', 'text', 'reply', 'needsHuman', 'problem'];\nconst rows = $('All handled messages').all();\nlet lines = rows.map((i) => cols.map((c) => esc(i.json[c])).join(',')).join('\\n') + '\\n';\n\n// New file (or someone deleted it): start with a header row. In Google Sheets the header\n// row already exists, so this whole branch becomes a single \"Append row\" node there.\nif (!$input.first().json.exists) lines = cols.join(',') + '\\n' + lines;\n\nreturn [{ json: { csv: lines } }];"
+      },
+      "id": "b7a1c2d3-0017-4c1e-9a10-000000000017"
+    },
+    {
+      "name": "To text",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        2640,
+        0
+      ],
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "csv",
+        "options": {
+          "fileName": "leads.csv"
+        }
+      },
+      "id": "b7a1c2d3-0018-4c1e-9a10-000000000018"
+    },
+    {
+      "name": "Append to leads sheet",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        2860,
+        0
+      ],
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('Config').first().json.leadsFile }}",
+        "options": {
+          "append": true
+        }
+      },
+      "id": "b7a1c2d3-0019-4c1e-9a10-000000000019"
+    },
+    {
+      "name": "Order or needs human?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "version": 2
+          },
+          "combinator": "or",
+          "conditions": [
+            {
+              "leftValue": "={{ $json.intent }}",
+              "rightValue": "order",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "leftValue": "={{ $json.needsHuman }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b7a1c2d3-0020-4c1e-9a10-000000000020"
+    },
+    {
+      "name": "Notify owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        200
+      ],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.waApiBase + '/' + $('Config').first().json.waPhoneNumberId + '/messages' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Config').first().json.waAccessToken }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $('Config').first().json.ownerPhone, type: 'text', text: { body:  ($json.needsHuman ? '⚠️ PERLU DIBALAS ADMIN' : '🛒 PESANAN BARU') + '\\n' + 'Dari: ' + ($json.name || '-') + ' (+' + $json.from + ')\\n' + ($json.product ? 'Produk: ' + $json.product + ' x' + ($json.quantity || '?') + '\\n' : '') + ($json.address ? 'Alamat: ' + $json.address + '\\n' : '') + ($json.total ? 'Total: Rp' + $json.total.toLocaleString('id-ID') + '\\n' : '') + 'Pesan: ' + ($json.text ?? '[' + $json.type + ']') + ($json.problem ? '\\nCatatan: ' + $json.problem : '') } }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "b7a1c2d3-0021-4c1e-9a10-000000000021"
+    }
+  ],
+  "connections": {
+    "WhatsApp verify (GET)": {
+      "main": [
+        [
+          {
+            "node": "Token matches?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token matches?": {
+      "main": [
+        [
+          {
+            "node": "Return challenge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject (403)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WhatsApp message (POST)": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Parse Meta payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Meta payload": {
+      "main": [
+        [
+          {
+            "node": "Skip duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip duplicates": {
+      "main": [
+        [
+          {
+            "node": "Text?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text?": {
+      "main": [
+        [
+          {
+            "node": "Build AI request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Non-text: hand to human",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI request": {
+      "main": [
+        [
+          {
+            "node": "AI: classify + draft reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI: classify + draft reply": {
+      "main": [
+        [
+          {
+            "node": "Validate AI output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate AI output": {
+      "main": [
+        [
+          {
+            "node": "All handled messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Non-text: hand to human": {
+      "main": [
+        [
+          {
+            "node": "All handled messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All handled messages": {
+      "main": [
+        [
+          {
+            "node": "Reply to customer",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Leads file exists?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Order or needs human?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leads file exists?": {
+      "main": [
+        [
+          {
+            "node": "File status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File status": {
+      "main": [
+        [
+          {
+            "node": "Build sheet rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build sheet rows": {
+      "main": [
+        [
+          {
+            "node": "To text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "To text": {
+      "main": [
+        [
+          {
+            "node": "Append to leads sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order or needs human?": {
+      "main": [
+        [
+          {
+            "node": "Notify owner",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "pinData": {}
+}

@@ -1,8 +1,8 @@
 # n8n workflow portfolio
 
-Three n8n workflows built to demonstrate patterns I use in production automation:
-multi-source aggregation, LLM integration with structured output, and stateful alerting
-that doesn't cry wolf.
+Four n8n workflows built to demonstrate patterns I use in production automation:
+multi-source aggregation, LLM integration with structured output, stateful alerting
+that doesn't cry wolf, and a WhatsApp AI assistant that is never allowed to invent a price.
 
 Everything here runs locally and free — n8n self-hosted, Ollama for the model, public APIs
 with no keys. Nothing in this repo touches any employer system or data.
@@ -149,3 +149,74 @@ file tickets.
 Workflow 3 reads and writes `<repo>/.state/alert-state.json`. n8n requires an absolute path there,
 so the two file nodes and the `N8N_RESTRICT_FILE_ACCESS_TO` variable need repointing at wherever you
 clone this. `.state/` is gitignored — the state file is runtime data, not source.
+
+---
+
+## 4. WhatsApp AI order assistant for a small shop
+
+`workflows/04-whatsapp-ai-order-assistant.json` · tests: `tests/test_04_whatsapp.py`
+
+```
+Meta webhook → Parse → Skip duplicates → text?  ─ yes → AI: classify + draft → Validate
+                                               └ no  → hand to human ───────────┘
+          → Reply to customer  +  Append to leads sheet  +  Notify owner (orders / needs human)
+```
+
+The use case is the most common one I see for Indonesian small businesses: customers order on
+WhatsApp, the owner answers by hand, and leads get lost. A customer writes *"mau pesan 2 Arabika
+Gayo, kirim ke Jl. Pandanaran 12"* and gets back the order, the total and the shipping cost in
+seconds. The owner gets a WhatsApp ping with the order, and the row lands in the leads sheet.
+Questions about opening hours or shipping are answered from the shop's info and don't bother
+the owner.
+
+It speaks the real WhatsApp Cloud API: Meta's GET verification handshake, the actual webhook
+payload shape, and the Graph API `/messages` call for replies.
+
+**The rules that make it safe to put in front of customers:**
+
+| Rule | How |
+|---|---|
+| **The AI never does arithmetic** | It picks a product from an enum and a quantity. Code computes subtotal, shipping and the free-shipping threshold. |
+| **The AI never invents a price** | Every `Rp` amount in a reply must exist in the price list, or the reply is replaced with a holding message and the owner is pinged. |
+| **Nobody gets ghosted** | Model down, timeout, invalid JSON, unknown product: the customer still gets a polite reply, and the owner sees *why* the bot stepped back. |
+| **One message, one reply** | Meta retries webhooks; message IDs are de-duplicated so a retry never sends a second reply or logs a second order. |
+| **Receipts are not messages** | Delivery and read receipts arrive on the same webhook and are dropped before they reach the model. |
+| **Photos and voice notes go to a human** | A text model doesn't guess at them. |
+
+### What testing it found
+
+The first version passed every check I had written, and it was still wrong. Reading the leads file
+rather than trusting the test run showed three things:
+
+1. **The model invented a shipping price.** Asked *"ongkir ke Jakarta berapa?"*, it replied
+   Rp30.000. The real rate is a flat Rp15.000. It had also labelled the question as an order and
+   paged the owner. This is why money is now computed in code and every quoted price is checked
+   against the list. I confirmed the guard by swapping in a fake model that returns Rp30.000: the
+   customer got the holding reply and the owner got *"AI quoted a price not in the price list:
+   Rp30.000"*.
+2. **Product, quantity and address came back empty.** A nested `order` object in the JSON schema was
+   too much for a 3B model. A flat schema with the product as an enum fixed it.
+3. **The sheet lost its header row when the file was recreated.** A "header already written" flag
+   in workflow static data outlived the file. The workflow now checks whether the file exists.
+   Reading a missing file gives zero items rather than an error, so the check is an expression on
+   the file's binary data.
+
+`tests/test_04_whatsapp.py` runs 24 end-to-end checks against the live workflow and a real local
+model, with a mock Graph API standing in for WhatsApp so every outbound message is asserted on.
+The checks cover the verify handshake, order totals, free shipping, missing address, duplicate
+delivery, receipts, images, owner notifications and the price guard. The model is
+non-deterministic, so the tests assert *behaviour* (answered vs. escalated) rather than the exact
+label it chose. They pass on repeated runs.
+
+### Running it
+
+1. Import the workflow and fill in the **Config** node: products and prices, owner's number,
+   WhatsApp Cloud API phone-number ID and token, model URL. Put the verify token in the
+   **Token matches?** node as well.
+2. Publish it, and point the Meta app's webhook at `https://<your-n8n>/webhook/whatsapp`.
+3. For a client, the CSV branch becomes one Google Sheets **Append row** node with the same columns.
+
+To run the tests locally: start Ollama (`llama3.2`) and n8n with
+`N8N_RESTRICT_FILE_ACCESS_TO=~/n8n-files`, publish the workflow as shipped (it points at the mock
+API on `127.0.0.1:8765`), then run `python3 tests/test_04_whatsapp.py`.
+
